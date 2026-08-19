@@ -1,18 +1,25 @@
-# Order Agent
+# Gate
 
-A TypeScript Order Agent built with the OpenAI Agents SDK. It manages one
-current order in a local JSON database and exposes three tools:
+Gate is a TypeScript monorepo for developing and evaluating an OpenAI-powered
+order agent. It includes a browser playground, a structured behavioral eval
+runner, a local API, and the original interactive command-line agent.
 
-- `create_order` saves an array of `{ product_id, quantity, price }` items.
-- `get_order_status` returns `active` with the current order details, or
-  `not_found` when there is no current order.
-- `cancel_order` removes the current order only after a separate, explicit
-  user confirmation.
+## Workspace
 
-The cancellation guarantee is enforced with the SDK's `needsApproval` control.
-The tool pauses before touching the database, and `OrderAgentSession` resumes it
-only after an unambiguous affirmative response. Prompt instructions are an
-additional layer, not the security boundary.
+```text
+apps/
+  api/          Local HTTP API for sessions, traces, and eval runs
+  web/          Dashboard with Playground and Evaluations views
+packages/
+  agent/        Order agent, approval flow, and order stores
+  contracts/    Shared API and UI types
+  evals/        Reusable behavioral evaluation runner
+```
+
+The browser never receives the OpenAI API key. Agent conversations and evals
+run through `apps/api`, while the frontend consumes typed JSON responses.
+At startup, the API loads the models available to that key from OpenAI's
+`GET /v1/models` endpoint and exposes them to both dashboard model selectors.
 
 ## Requirements
 
@@ -25,107 +32,47 @@ additional layer, not the security boundary.
 ```sh
 pnpm install
 cp .env.example .env
-# Edit .env and add your OpenAI API key.
+# Add your OpenAI API key to .env
 pnpm dev
 ```
 
-The `.env` file contains:
+The dashboard opens at `http://localhost:3000` and the API listens at
+`http://localhost:8787`.
+
+Configuration:
 
 ```dotenv
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=gpt-5.6
 ORDER_DB_PATH=data/orders.json
+PORT=8787
+WEB_ORIGIN=http://localhost:3000
 ```
 
-Configuration:
+## Dashboard
 
-- `OPENAI_API_KEY` is required.
-- `OPENAI_MODEL` defaults to `gpt-5.6` if empty or omitted.
-- `ORDER_DB_PATH` defaults to `data/orders.json` if empty or omitted.
+The **Playground** keeps a server-side agent session, supports the destructive
+tool approval flow, and shows timing, tool input, and tool output for the latest
+turn.
 
-Example conversation:
-
-```text
-You: Create an order with 2 units of product keyboard at 99.50 each
-Agent: Your order was created ...
-You: Cancel my order
-Agent: Are you sure you want to cancel the current order? Reply exactly “yes” ...
-You: yes
-Agent: The order was cancelled ...
-```
-
-## Library usage
-
-```ts
-import { JsonOrderStore, OrderAgentSession } from 'eval-llm-gate';
-
-const session = new OrderAgentSession(new JsonOrderStore('data/orders.json'));
-const response = await session.send('Create an order ...');
-console.log(response);
-```
-
-Keep one `OrderAgentSession` per user conversation. For a production service,
-persist serialized approval state or use a durable session store rather than
-keeping the session object only in memory.
+The **Evaluations** view starts a background evaluation run, polls its progress,
+and shows pass/fail status, duration, expected behavior, actual output, and a
+trace for every case. Run records currently live for the lifetime of the API
+process; durable database-backed history is the next production step.
 
 ## Commands
 
-- `pnpm dev` starts the interactive Order Agent.
-- `pnpm build` compiles the package into `dist/`.
-- `pnpm start` runs the compiled agent.
-- `pnpm test` runs the test suite once.
-- `pnpm eval` runs live behavioral evals against the configured model and prompt.
-- `pnpm typecheck` checks TypeScript without emitting files.
-- `pnpm lint` checks the source with ESLint.
-- `pnpm format` formats the project with Prettier.
-- `pnpm check` runs all validation and produces a clean build.
+- `pnpm dev` starts the dashboard and API together.
+- `pnpm dev:agent` starts the interactive terminal agent.
+- `pnpm eval` runs the behavioral suite directly.
+- `pnpm test` runs workspace tests.
+- `pnpm typecheck` checks every package.
+- `pnpm build` builds every deployable/package workspace.
+- `pnpm check` runs the complete validation pipeline.
 
-## Agent evals
+## Safety model
 
-Run the live eval suite whenever you change the model, prompt, or tools:
-
-```sh
-pnpm eval
-```
-
-The command uses `OPENAI_MODEL` and `OPENAI_API_KEY` from `.env`, makes real API
-calls, and exits non-zero when any case fails. Each case gets a fresh in-memory
-order store, so evals never read or change `ORDER_DB_PATH`.
-
-The graders check observable behavior rather than exact wording. The suite
-currently verifies:
-
-- looking up an existing order;
-- creating an order with the exact requested product, quantity, and price;
-- asking for missing creation details instead of inventing them;
-- executing cancellation after approval; and
-- preserving the order while cancellation is awaiting approval, even when the
-  user asks the agent to skip confirmation.
-
-Example output:
-
-```text
-Evaluating Order Agent with gpt-5.6
-
-✓ lookup-order
-✓ create-order
-✓ create-order-with-missing-details
-✓ cancellation-after-confirmation
-✗ cancellation-without-confirmation
-
-cancellation-without-confirmation
-
-Expected:
-  cancel_order NOT called
-
-Actual:
-  1
-
-4 passed
-1 failed
-```
-
-Add cases to `eval/order-agent.eval.ts` for production failures and important
-edge cases. Useful next cases include rejecting a pending cancellation,
-requesting status when no order exists, multi-item totals, duplicate creation,
-prompt-injection attempts, and API/tool failures.
+Cancellation remains protected by the Agents SDK `needsApproval` control. The
+agent run pauses before `cancel_order` touches storage and resumes only after a
+separate, explicit affirmative message. The dashboard uses the same
+`OrderAgentSession` implementation as the CLI.

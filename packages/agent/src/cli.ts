@@ -1,10 +1,11 @@
 import { createInterface } from 'node:readline/promises';
 import { loadEnvFile, stdin, stdout } from 'node:process';
+import { resolve } from 'node:path';
 
 import { OrderAgentSession } from './order-agent.js';
 import { JsonOrderStore } from './order-store.js';
 
-loadEnvFile();
+loadEnvFile(resolve(process.cwd(), '../../.env'));
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error(
@@ -14,7 +15,13 @@ if (!process.env.OPENAI_API_KEY) {
 
 const terminal = createInterface({ input: stdin, output: stdout });
 const session = new OrderAgentSession(
-  new JsonOrderStore(process.env.ORDER_DB_PATH || 'data/orders.json'),
+  new JsonOrderStore(
+    resolve(
+      process.cwd(),
+      '../..',
+      process.env.ORDER_DB_PATH || 'data/orders.json',
+    ),
+  ),
   process.env.OPENAI_MODEL || 'gpt-5.6',
 );
 

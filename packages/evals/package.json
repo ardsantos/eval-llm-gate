@@ -1,0 +1,27 @@
+{
+  "name": "@gate/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/runner.js",
+  "types": "./dist/runner.d.ts",
+  "exports": {
+    ".": "./src/runner.ts"
+  },
+  "scripts": {
+    "eval": "tsx src/cli.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@gate/agent": "workspace:*",
+    "@gate/contracts": "workspace:*",
+    "@openai/agents": "^0.16.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

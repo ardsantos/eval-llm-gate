@@ -16,6 +16,5 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "skipLibCheck": true
-  },
-  "include": ["src", "test", "eval", "eslint.config.js", "vitest.config.ts"]
+  }
 }

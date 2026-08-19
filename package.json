@@ -2,28 +2,16 @@
   "name": "eval-llm-gate",
   "version": "0.0.0",
   "private": true,
-  "description": "An Order Agent with approval-gated cancellation.",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
+  "description": "An agent playground and behavioral evaluation workspace.",
   "scripts": {
-    "dev": "tsx src/cli.ts",
-    "eval": "tsx eval/order-agent.eval.ts",
-    "build": "tsc -p tsconfig.build.json",
-    "start": "node dist/cli.js",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "eslint .",
+    "dev": "pnpm --parallel --filter @gate/api --filter @gate/web dev",
+    "dev:agent": "pnpm --filter @gate/agent dev",
+    "eval": "pnpm --filter @gate/evals eval",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "lint": "pnpm -r --if-present lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build"
@@ -42,9 +30,5 @@
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.41.0",
     "vitest": "^3.2.4"
-  },
-  "dependencies": {
-    "@openai/agents": "^0.16.1",
-    "zod": "^4.4.3"
   }
 }
