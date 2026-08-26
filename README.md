@@ -23,7 +23,7 @@ At startup, the API loads the models available to that key from OpenAI's
 
 ## Requirements
 
-- Node.js 22 or newer
+- Node.js 22.13 or newer
 - pnpm 10
 - An OpenAI API key
 
@@ -44,21 +44,38 @@ Configuration:
 ```dotenv
 OPENAI_API_KEY=your-api-key
 OPENAI_MODEL=gpt-5.6
-ORDER_DB_PATH=data/orders.json
+GATE_DB_PATH=data/gate.sqlite
 PORT=8787
 WEB_ORIGIN=http://localhost:3000
 ```
 
 ## Dashboard
 
-The **Playground** keeps a server-side agent session, supports the destructive
-tool approval flow, and shows timing, tool input, and tool output for the latest
-turn.
+The **Playground** keeps a durable server-side agent session, supports the
+destructive tool approval flow, and shows timing, tool input, and tool output
+for the latest turn. Agent conversation items, user-visible messages, orders,
+and pending approvals are stored in SQLite, so a session can continue after an
+API restart. The browser remembers its session ID and reloads the persisted
+history from `GET /sessions/:id/messages` after a refresh.
 
 The **Evaluations** view starts a background evaluation run, polls its progress,
 and shows pass/fail status, duration, expected behavior, actual output, and a
-trace for every case. Run records currently live for the lifetime of the API
-process; durable database-backed history is the next production step.
+trace for every case. Runs and their incremental results are persisted in the
+same SQLite database. Runs interrupted by an API shutdown are marked failed on
+the next startup instead of remaining stuck in a running state.
+
+## Persistence
+
+The API and terminal agent share one portable SQLite file at
+`data/gate.sqlite` by default. Set `GATE_DB_PATH` to place it elsewhere. Schema
+migrations run automatically when the database opens; foreign keys, WAL mode,
+and a write busy timeout are enabled.
+
+Orders and order items use relational tables and integer cents. Flexible SDK
+conversation items and trace payloads are retained as JSON inside SQLite. On
+first use, the app imports active orders from the old `data/orders.json` and
+`data/sessions/*.json` files when present; those legacy files are left untouched
+as a recoverable backup.
 
 ## Commands
 

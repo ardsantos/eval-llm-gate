@@ -24,6 +24,18 @@ export interface ChatResponse {
   events: TraceEvent[];
 }
 
+export interface ChatHistoryMessage extends ChatMessage {
+  status?: 'completed' | 'confirmation_required';
+  durationMs?: number;
+  events?: TraceEvent[];
+}
+
+export interface ChatHistoryResponse {
+  sessionId: string;
+  model: string;
+  messages: ChatHistoryMessage[];
+}
+
 export interface ModelsResponse {
   defaultModel: string;
   models: string[];

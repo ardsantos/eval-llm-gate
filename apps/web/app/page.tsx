@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type {
+  ChatHistoryResponse,
   ChatMessage,
   ChatResponse,
   EvalCaseResult,
@@ -11,6 +12,7 @@ import type {
 } from '@gate/contracts';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+const SESSION_STORAGE_KEY = 'gate.sessionId';
 
 const welcomeMessages: ChatMessage[] = [
   {
@@ -166,13 +168,34 @@ export default function Home() {
         const modelsBody = modelsRequest.ok
           ? ((await modelsRequest.json()) as ModelsResponse)
           : { defaultModel: healthBody.model, models: [healthBody.model] };
-        const session = await fetch(`${API_URL}/sessions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: modelsBody.defaultModel }),
-        });
-        if (!session.ok) throw new Error('Could not create a session');
-        const sessionBody = (await session.json()) as { sessionId: string };
+        let activeSessionId = window.localStorage.getItem(SESSION_STORAGE_KEY);
+        let activeSessionModel = modelsBody.defaultModel;
+        let priorMessages: ChatHistoryResponse['messages'] = [];
+        if (activeSessionId) {
+          const messagesRequest = await fetch(
+            `${API_URL}/sessions/${activeSessionId}/messages`,
+          );
+          if (messagesRequest.ok) {
+            const persisted =
+              (await messagesRequest.json()) as ChatHistoryResponse;
+            activeSessionModel = persisted.model;
+            priorMessages = persisted.messages;
+          } else {
+            window.localStorage.removeItem(SESSION_STORAGE_KEY);
+            activeSessionId = null;
+          }
+        }
+        if (!activeSessionId) {
+          const session = await fetch(`${API_URL}/sessions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: modelsBody.defaultModel }),
+          });
+          if (!session.ok) throw new Error('Could not create a session');
+          const sessionBody = (await session.json()) as { sessionId: string };
+          activeSessionId = sessionBody.sessionId;
+          window.localStorage.setItem(SESSION_STORAGE_KEY, activeSessionId);
+        }
         const history = await fetch(`${API_URL}/eval-runs`);
         const priorRuns = history.ok
           ? ((await history.json()) as EvalRun[])
@@ -180,9 +203,15 @@ export default function Home() {
         if (!cancelled) {
           setApiState('ready');
           setModels(modelsBody.models);
-          setPlaygroundModel(modelsBody.defaultModel);
+          setPlaygroundModel(activeSessionModel);
           setEvaluationModel(modelsBody.defaultModel);
-          setSessionId(sessionBody.sessionId);
+          setSessionId(activeSessionId);
+          setMessages(priorMessages);
+          const latestAgentMessage = [...priorMessages]
+            .reverse()
+            .find((message) => message.role === 'agent');
+          setEvents(latestAgentMessage?.events ?? []);
+          setDuration(latestAgentMessage?.durationMs ?? 0);
           if (priorRuns.length) {
             setRuns(priorRuns);
             setSelectedRunId(priorRuns[0]!.id);
@@ -212,6 +241,7 @@ export default function Home() {
       if (!response.ok) throw new Error();
       const body = (await response.json()) as { sessionId: string };
       setSessionId(body.sessionId);
+      window.localStorage.setItem(SESSION_STORAGE_KEY, body.sessionId);
       setMessages([]);
       setEvents([]);
       setDuration(0);

@@ -1,6 +1,7 @@
 import {
   Agent,
-  type RunState,
+  RunState,
+  type Session,
   type RunToolApprovalItem,
   run,
   tool,
@@ -128,24 +129,32 @@ interface PendingApproval {
   interruptions: RunToolApprovalItem[];
 }
 
+export interface PersistentAgentSession extends Session {
+  getPendingRunState(): Promise<string | undefined>;
+  setPendingRunState(state: string | undefined): Promise<void>;
+}
+
 export class OrderAgentSession {
   readonly agent: OrderAgent;
   private pendingApproval: PendingApproval | undefined;
-  private previousResponseId: string | undefined;
+  private persistenceLoaded = false;
 
-  constructor(store: OrderStore, model = 'gpt-5.6') {
+  constructor(
+    store: OrderStore,
+    model = 'gpt-5.6',
+    private readonly persistence?: PersistentAgentSession,
+  ) {
     this.agent = createOrderAgent(store, model);
   }
 
   async send(message: string): Promise<OrderAgentResponse> {
+    await this.loadPendingApproval();
     if (this.pendingApproval) {
       return this.resolveConfirmation(message);
     }
 
-    const result = this.previousResponseId
-      ? await run(this.agent, message, {
-          previousResponseId: this.previousResponseId,
-        })
+    const result = this.persistence
+      ? await run(this.agent, message, { session: this.persistence })
       : await run(this.agent, message);
 
     if (result.interruptions.length > 0) {
@@ -153,10 +162,11 @@ export class OrderAgentSession {
         state: result.state,
         interruptions: result.interruptions,
       };
+      await this.persistence?.setPendingRunState(result.state.toString());
       return confirmationRequired();
     }
 
-    this.previousResponseId = result.lastResponseId;
+    await this.persistence?.setPendingRunState(undefined);
     return {
       status: 'completed',
       message: result.finalOutput ?? 'The agent completed without a response.',
@@ -182,9 +192,21 @@ export class OrderAgentSession {
       }
     }
 
+    const result = this.persistence
+      ? await run(this.agent, pending.state, { session: this.persistence })
+      : await run(this.agent, pending.state);
+
+    if (result.interruptions.length > 0) {
+      this.pendingApproval = {
+        state: result.state,
+        interruptions: result.interruptions,
+      };
+      await this.persistence?.setPendingRunState(result.state.toString());
+      return confirmationRequired();
+    }
+
     this.pendingApproval = undefined;
-    const result = await run(this.agent, pending.state);
-    this.previousResponseId = result.lastResponseId;
+    await this.persistence?.setPendingRunState(undefined);
 
     return {
       status: 'completed',
@@ -194,6 +216,33 @@ export class OrderAgentSession {
           ? 'The cancellation was processed.'
           : 'The order was not cancelled.'),
     };
+  }
+
+  private async loadPendingApproval(): Promise<void> {
+    if (this.persistenceLoaded || !this.persistence) return;
+    this.persistenceLoaded = true;
+    const serialized = await this.persistence.getPendingRunState();
+    if (!serialized) return;
+
+    let state: RunState<undefined, OrderAgent>;
+    try {
+      state = await RunState.fromString<undefined, OrderAgent>(
+        this.agent,
+        serialized,
+      );
+    } catch (error) {
+      await this.persistence.setPendingRunState(undefined);
+      throw new Error(
+        'The saved approval could not be restored. Ask to cancel the order again.',
+        { cause: error },
+      );
+    }
+    const interruptions = state.getInterruptions();
+    if (interruptions.length === 0) {
+      await this.persistence.setPendingRunState(undefined);
+      return;
+    }
+    this.pendingApproval = { state, interruptions };
   }
 }
 

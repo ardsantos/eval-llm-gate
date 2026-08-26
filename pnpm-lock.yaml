@@ -142,6 +142,9 @@ importers:
 
   packages/agent:
     dependencies:
+      '@gate/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@openai/agents':
         specifier: ^0.16.1
         version: 0.16.1(ws@8.21.3)(zod@4.4.3)

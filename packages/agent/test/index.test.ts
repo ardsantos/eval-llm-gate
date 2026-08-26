@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { RunContext } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents';
 import { describe, expect, it } from 'vitest';
 
+import { GateDatabase } from '../src/database.js';
 import { createOrderTools, parseConfirmation } from '../src/order-agent.js';
 import { JsonOrderStore } from '../src/order-store.js';
 
@@ -39,6 +41,79 @@ describe('JsonOrderStore', () => {
     await expect(store.removeCurrentOrder()).resolves.toEqual(order);
     await expect(store.getCurrentOrder()).resolves.toBeNull();
     await expect(store.removeCurrentOrder()).resolves.toBeNull();
+  });
+});
+
+describe('GateDatabase', () => {
+  it('persists relational orders across database connections', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'gate-database-'));
+    const filePath = join(directory, 'gate.sqlite');
+    const first = new GateDatabase(filePath);
+    first.ensureSession('session-1', 'test-model');
+    const created = await first.createOrderStore('session-1').saveOrder([
+      { product_id: 'keyboard', quantity: 2, price: 99.5 },
+      { product_id: 'mouse', quantity: 1, price: 40 },
+    ]);
+    first.close();
+
+    const second = new GateDatabase(filePath);
+    await expect(
+      second.createOrderStore('session-1').getCurrentOrder(),
+    ).resolves.toEqual(created);
+    second.close();
+  });
+
+  it('persists SDK conversation items and paused run state', async () => {
+    const database = new GateDatabase(':memory:');
+    database.ensureSession('session-1', 'test-model');
+    const session = database.createAgentSession('session-1');
+    const item: AgentInputItem = { role: 'user', content: 'Hello' };
+
+    await session.addItems([item]);
+    await session.setPendingRunState('{"paused":true}');
+
+    await expect(session.getItems()).resolves.toEqual([item]);
+    await expect(session.getPendingRunState()).resolves.toBe('{"paused":true}');
+    database.close();
+  });
+
+  it('persists evaluation results and trace payloads', () => {
+    const database = new GateDatabase(':memory:');
+    database.saveEvalRun({
+      id: 'run-1',
+      model: 'test-model',
+      status: 'passed',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:00:01.000Z',
+      passed: 1,
+      failed: 0,
+      results: [
+        {
+          name: 'case-1',
+          label: 'Case 1',
+          status: 'passed',
+          durationMs: 12,
+          expected: 'success',
+          actual: 'success',
+          events: [
+            {
+              id: 'event-1',
+              kind: 'response',
+              label: 'Completed',
+              detail: 'success',
+              elapsedMs: 12,
+              payload: { durable: true },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(database.getEvalRun('run-1')).toEqual(database.listEvalRuns()[0]);
+    expect(
+      database.getEvalRun('run-1')?.results[0]?.events[0]?.payload,
+    ).toEqual({ durable: true });
+    database.close();
   });
 });
 

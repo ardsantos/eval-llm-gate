@@ -4,6 +4,13 @@ export {
   OrderAgentSession,
   parseConfirmation,
 } from './order-agent.js';
+export type { PersistentAgentSession } from './order-agent.js';
+export {
+  GateDatabase,
+  SqliteAgentSession,
+  SqliteOrderStore,
+} from './database.js';
+export type { ChatMessageMetadata, PersistedChatMessage } from './database.js';
 export { JsonOrderStore } from './order-store.js';
 export type {
   ConfirmationDecision,

@@ -17,7 +17,7 @@
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm build"
   },
   "engines": {
-    "node": ">=22",
+    "node": ">=22.13",
     "pnpm": ">=10"
   },
   "packageManager": "pnpm@10.15.0",

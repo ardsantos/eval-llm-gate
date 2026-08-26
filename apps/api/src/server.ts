@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
 import {
   createServer,
   type IncomingMessage,
@@ -7,7 +8,7 @@ import {
 import { loadEnvFile } from 'node:process';
 import { resolve } from 'node:path';
 
-import { JsonOrderStore, OrderAgentSession } from '@gate/agent';
+import { GateDatabase, OrderAgentSession } from '@gate/agent';
 import type { Order, OrderItem, OrderStore } from '@gate/agent';
 import type {
   ApiError,
@@ -26,15 +27,21 @@ try {
 
 const port = Number(process.env.PORT || 8787);
 const configuredModel = process.env.OPENAI_MODEL || 'gpt-5.6';
+const databasePath = resolve(
+  process.cwd(),
+  '../..',
+  process.env.GATE_DB_PATH || 'data/gate.sqlite',
+);
+const database = new GateDatabase(databasePath);
 let defaultModel = configuredModel;
 let availableModels = [configuredModel];
 interface ApiSession {
   agent: OrderAgentSession;
   model: string;
   trace: TraceEvent[];
+  operation: Promise<void>;
 }
 const sessions = new Map<string, ApiSession>();
-const evalRuns = new Map<string, EvalRun>();
 
 const server = createServer((request, response) => {
   void handleRequest(request, response);
@@ -73,6 +80,7 @@ async function handleRequest(
       const body = await readJson(request);
       const selectedModel = getRequestedModel(body);
       const id = randomUUID();
+      database.ensureSession(id, selectedModel);
       sessions.set(id, createSession(id, selectedModel));
       return json(response, 201, { sessionId: id });
     }
@@ -80,6 +88,15 @@ async function handleRequest(
     const messageMatch = url.pathname.match(
       /^\/sessions\/([a-f0-9-]+)\/messages$/u,
     );
+    if (request.method === 'GET' && messageMatch?.[1]) {
+      const sessionId = messageMatch[1];
+      const persistedSession = database.ensureSession(sessionId, defaultModel);
+      return json(response, 200, {
+        sessionId,
+        model: persistedSession.model,
+        messages: database.listChatMessages(sessionId),
+      });
+    }
     if (request.method === 'POST' && messageMatch?.[1]) {
       requireApiKey();
       const body = await readJson(request);
@@ -87,57 +104,75 @@ async function handleRequest(
         return json(response, 400, {
           error: 'Message is required.',
         } satisfies ApiError);
+      const message = body.message.trim();
       const sessionId = messageMatch[1];
+      const persistedSession = database.ensureSession(sessionId, defaultModel);
       const session =
-        sessions.get(sessionId) ?? createSession(sessionId, defaultModel);
+        sessions.get(sessionId) ??
+        createSession(sessionId, persistedSession.model);
       sessions.set(sessionId, session);
-      session.trace.length = 0;
-      const started = performance.now();
-      const agentResponse = await session.agent.send(body.message.trim());
-      const durationMs = Math.round(performance.now() - started);
-      const events: TraceEvent[] = [
-        {
+      const payload = await exclusiveSession(session, async () => {
+        const userMessage = {
           id: randomUUID(),
-          kind: 'agent',
-          label: 'Agent started',
-          detail: session.model,
-          elapsedMs: 0,
-        },
-        ...session.trace,
-        {
-          id: randomUUID(),
-          kind:
-            agentResponse.status === 'confirmation_required'
-              ? 'tool_call'
-              : 'response',
-          label:
-            agentResponse.status === 'confirmation_required'
-              ? 'Approval required'
-              : 'Response completed',
-          detail:
-            agentResponse.status === 'confirmation_required'
-              ? 'cancel_order paused'
-              : `${durationMs}ms`,
-          elapsedMs: durationMs,
-        },
-      ];
-      const payload: ChatResponse = {
-        sessionId,
-        status: agentResponse.status,
-        message: {
-          id: randomUUID(),
-          role: 'agent',
-          body: agentResponse.message,
+          role: 'user' as const,
+          body: message,
           createdAt: new Date().toISOString(),
-        },
-        durationMs,
-        events,
-      };
+        };
+        database.saveChatMessage(sessionId, userMessage);
+        session.trace.length = 0;
+        const started = performance.now();
+        const agentResponse = await session.agent.send(userMessage.body);
+        const durationMs = Math.round(performance.now() - started);
+        const events: TraceEvent[] = [
+          {
+            id: randomUUID(),
+            kind: 'agent',
+            label: 'Agent started',
+            detail: session.model,
+            elapsedMs: 0,
+          },
+          ...session.trace,
+          {
+            id: randomUUID(),
+            kind:
+              agentResponse.status === 'confirmation_required'
+                ? 'tool_call'
+                : 'response',
+            label:
+              agentResponse.status === 'confirmation_required'
+                ? 'Approval required'
+                : 'Response completed',
+            detail:
+              agentResponse.status === 'confirmation_required'
+                ? 'cancel_order paused'
+                : `${durationMs}ms`,
+            elapsedMs: durationMs,
+          },
+        ];
+        const result: ChatResponse = {
+          sessionId,
+          status: agentResponse.status,
+          message: {
+            id: randomUUID(),
+            role: 'agent',
+            body: agentResponse.message,
+            createdAt: new Date().toISOString(),
+          },
+          durationMs,
+          events,
+        };
+        database.saveChatMessage(sessionId, result.message, {
+          status: result.status,
+          durationMs,
+          events,
+        });
+        return result;
+      });
       return json(response, 200, payload);
     }
 
     if (request.method === 'GET' && url.pathname === '/eval-runs') {
-      return json(response, 200, [...evalRuns.values()].reverse());
+      return json(response, 200, database.listEvalRuns());
     }
 
     if (request.method === 'POST' && url.pathname === '/eval-runs') {
@@ -153,14 +188,14 @@ async function handleRequest(
         failed: 0,
         results: [],
       };
-      evalRuns.set(run.id, run);
+      database.saveEvalRun(run);
       void executeEvalRun(run);
       return json(response, 202, run);
     }
 
     const evalMatch = url.pathname.match(/^\/eval-runs\/([a-f0-9-]+)$/u);
     if (request.method === 'GET' && evalMatch?.[1]) {
-      const run = evalRuns.get(evalMatch[1]);
+      const run = database.getEvalRun(evalMatch[1]);
       return run
         ? json(response, 200, run)
         : json(response, 404, {
@@ -181,14 +216,28 @@ async function handleRequest(
 }
 
 function createSession(id: string, selectedModel: string): ApiSession {
-  const storePath = resolve(process.cwd(), '../../data/sessions', `${id}.json`);
+  database.ensureSession(id, selectedModel);
   const trace: TraceEvent[] = [];
-  const store = new TracedOrderStore(new JsonOrderStore(storePath), trace);
+  const store = new TracedOrderStore(database.createOrderStore(id), trace);
+  const persistence = database.createAgentSession(id);
   return {
-    agent: new OrderAgentSession(store, selectedModel),
+    agent: new OrderAgentSession(store, selectedModel, persistence),
     model: selectedModel,
     trace,
+    operation: Promise.resolve(),
   };
+}
+
+async function exclusiveSession<T>(
+  session: ApiSession,
+  action: () => Promise<T>,
+): Promise<T> {
+  const result = session.operation.then(action, action);
+  session.operation = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 class TracedOrderStore implements OrderStore {
@@ -258,6 +307,7 @@ class TracedOrderStore implements OrderStore {
 
 async function executeEvalRun(evalRun: EvalRun): Promise<void> {
   evalRun.status = 'running';
+  database.saveEvalRun(evalRun);
   try {
     evalRun.results = await runOrderAgentEvaluations(
       evalRun.model,
@@ -267,6 +317,7 @@ async function executeEvalRun(evalRun: EvalRun): Promise<void> {
           (item) => item.status === 'passed',
         ).length;
         evalRun.failed = evalRun.results.length - evalRun.passed;
+        database.saveEvalRun(evalRun);
       },
     );
     evalRun.passed = evalRun.results.filter(
@@ -288,7 +339,41 @@ async function executeEvalRun(evalRun: EvalRun): Promise<void> {
     });
   } finally {
     evalRun.completedAt = new Date().toISOString();
+    database.saveEvalRun(evalRun);
   }
+}
+
+async function importLegacySessionOrders(): Promise<void> {
+  const directory = resolve(process.cwd(), '../../data/sessions');
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return;
+    throw error;
+  }
+  for (const name of names.filter((item) => item.endsWith('.json'))) {
+    const sessionId = name.slice(0, -'.json'.length);
+    try {
+      const contents = await readFile(resolve(directory, name), 'utf8');
+      const legacy = JSON.parse(contents) as { current_order?: Order | null };
+      if (legacy.current_order)
+        database.importCurrentOrder(
+          sessionId,
+          defaultModel,
+          legacy.current_order,
+        );
+    } catch (error) {
+      console.warn(
+        `Could not import legacy order file ${name}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 function requireApiKey(): void {
@@ -386,7 +471,11 @@ function empty(response: ServerResponse, status: number): void {
 }
 
 await loadAvailableModels();
+await importLegacySessionOrders();
+database.failInterruptedEvalRuns();
 
 server.listen(port, () => {
-  console.log(`Gate API ready at http://localhost:${port}`);
+  console.log(
+    `Gate API ready at http://localhost:${port} using ${databasePath}`,
+  );
 });

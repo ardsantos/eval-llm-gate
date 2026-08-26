@@ -16,6 +16,7 @@
     "lint": "eslint src test"
   },
   "dependencies": {
+    "@gate/contracts": "workspace:*",
     "@openai/agents": "^0.16.1",
     "zod": "^4.4.3"
   },
